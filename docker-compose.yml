@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  # API Gateway
+  nginx-gateway:
+    build: ./nginx
+    platform: linux/amd64
+    ports:
+      - "8000:80"  # Expose on port 8000 for external access
+    depends_on:
+      - auth-service
+      - users-service
+      - rag-service
+    networks:
+      - microservices-network
+
+  # Auth Microservice
+  auth-service:
+    build: ./auth-service
+    platform: linux/amd64
+    # No need to expose ports directly to the host, only to the internal network
+    expose:
+      - "8000"
+    volumes:
+      - ./auth-service/app:/app/app
+      - auth-data:/app/data
+    environment:
+      - DATABASE_URL=sqlite:///./data/auth_service.db
+      - SECRET_KEY=change_this_in_production
+    networks:
+      - microservices-network
+
+  # Users Microservice
+  users-service:
+    build: ./users-service
+    platform: linux/amd64
+    expose:
+      - "8001"
+    volumes:
+      - ./users-service/app:/app/app
+      - users-data:/app/data
+    environment:
+      - DATABASE_URL=sqlite:///./data/users_service.db
+      - AUTH_SERVICE_URL=http://auth-service:8000
+    depends_on:
+      - auth-service
+    networks:
+      - microservices-network
+
+  # RAG Microservice
+  rag-service:
+    build: ./rag-service
+    platform: linux/amd64
+    expose:
+      - "8002"
+    volumes:
+      - ./rag-service/app:/app/app
+      - ./rag-service/.env:/app/.env  # Mount .env file
+      - ./storage:/app/storage
+      - rag-data:/app/data
+    environment:
+      - DATABASE_URL=sqlite:///./data/rag_service.db
+      - AUTH_SERVICE_URL=http://auth-service:8000
+      - GROQ_API_KEY=${GROQ_API_KEY:-}  # Pass from environment or empty if not set
+    depends_on:
+      - auth-service
+    networks:
+      - microservices-network
+
+volumes:
+  auth-data:
+  users-data:
+  rag-data:
+
+networks:
+  microservices-network:
+    driver: bridge 

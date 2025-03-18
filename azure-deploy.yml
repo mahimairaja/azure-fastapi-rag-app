@@ -1,0 +1,104 @@
+name: Deploy FastAPI Microservices to Azure
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v1
+    
+    - name: Login to Azure Container Registry
+      uses: docker/login-action@v1
+      with:
+        registry: ${{ secrets.AZURE_REGISTRY_URL }}
+        username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+        password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+    
+    # Build and push auth-service
+    - name: Build and push auth-service
+      uses: docker/build-push-action@v2
+      with:
+        context: ./auth-service
+        push: true
+        tags: ${{ secrets.AZURE_REGISTRY_URL }}/auth-service:latest
+    
+    # Build and push users-service
+    - name: Build and push users-service
+      uses: docker/build-push-action@v2
+      with:
+        context: ./users-service
+        push: true
+        tags: ${{ secrets.AZURE_REGISTRY_URL }}/users-service:latest
+    
+    # Build and push rag-service
+    - name: Build and push rag-service
+      uses: docker/build-push-action@v2
+      with:
+        context: ./rag-service
+        push: true
+        tags: ${{ secrets.AZURE_REGISTRY_URL }}/rag-service:latest
+    
+    # Deploy to Azure
+    - name: Azure login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    
+    # Deploy auth-service
+    - name: Deploy auth-service to Azure Container Apps
+      uses: azure/container-apps-deploy-action@v1
+      with:
+        appSourcePath: ./auth-service
+        acrName: ${{ secrets.AZURE_REGISTRY_NAME }}
+        acrUsername: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+        acrPassword: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+        containerAppName: auth-service
+        resourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
+        containerAppEnvironment: ${{ secrets.AZURE_ENVIRONMENT }}
+        targetPort: 8000
+        ingress: external
+        environmentVariables: |
+          DATABASE_URL=${{ secrets.AUTH_DB_URL }}
+          SECRET_KEY=${{ secrets.AUTH_SECRET_KEY }}
+    
+    # Deploy users-service
+    - name: Deploy users-service to Azure Container Apps
+      uses: azure/container-apps-deploy-action@v1
+      with:
+        appSourcePath: ./users-service
+        acrName: ${{ secrets.AZURE_REGISTRY_NAME }}
+        acrUsername: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+        acrPassword: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+        containerAppName: users-service
+        resourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
+        containerAppEnvironment: ${{ secrets.AZURE_ENVIRONMENT }}
+        targetPort: 8001
+        ingress: external
+        environmentVariables: |
+          DATABASE_URL=${{ secrets.USERS_DB_URL }}
+          AUTH_SERVICE_URL=${{ secrets.AUTH_SERVICE_URL }}
+    
+    # Deploy rag-service
+    - name: Deploy rag-service to Azure Container Apps
+      uses: azure/container-apps-deploy-action@v1
+      with:
+        appSourcePath: ./rag-service
+        acrName: ${{ secrets.AZURE_REGISTRY_NAME }}
+        acrUsername: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+        acrPassword: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+        containerAppName: rag-service
+        resourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
+        containerAppEnvironment: ${{ secrets.AZURE_ENVIRONMENT }}
+        targetPort: 8002
+        ingress: external
+        environmentVariables: |
+          DATABASE_URL=${{ secrets.RAG_DB_URL }}
+          AUTH_SERVICE_URL=${{ secrets.AUTH_SERVICE_URL }} 

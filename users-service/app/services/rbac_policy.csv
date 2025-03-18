@@ -1,0 +1,7 @@
+p, admin, /users, GET
+p, admin, /users, POST
+p, admin, /users, PUT
+p, admin, /users, DELETE
+p, user, /users, GET
+p, user, /users/{id}, GET
+g, admin, user

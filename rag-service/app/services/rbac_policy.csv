@@ -1,0 +1,7 @@
+p, admin, /rag, POST
+p, admin, /rag, GET
+p, editor, /rag, POST
+p, editor, /rag, GET
+p, user, /rag, GET
+g, admin, editor
+g, editor, user
