@@ -101,7 +101,6 @@ async def list_users(
     """
     To list all users. Requires admin role.
     """
-    # Only admins can list all users
     if current_user.get("role") != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -173,14 +172,12 @@ async def update_user(
             detail="Not authorized to update this user"
         )
     
-    # Only admins can update roles
     if user_data.role and current_user.get("role") != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can update roles"
         )
     
-    # Update user data
     if user_data.username:
         user.username = user_data.username
     if user_data.email:
@@ -204,7 +201,6 @@ async def delete_user(
     """
     Delete a user. Admin only.
     """
-    # Check if user exists
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(
@@ -212,7 +208,6 @@ async def delete_user(
             detail="User not found"
         )
     
-    # Only admins can delete users
     if current_user.get("role") != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -237,17 +232,14 @@ async def sync_user(
     This is called when a user is created in the auth service.
     Admin only.
     """
-    # Only admin can sync users
     if current_user.get("role") != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can sync users"
         )
     
-    # Check if user already exists
     existing_user = db.query(User).filter(User.username == user_data.username).first()
     if existing_user:
-        # Update user data
         existing_user.email = user_data.email
         existing_user.role = user_data.role
         db.commit()
@@ -255,7 +247,6 @@ async def sync_user(
         logger.info(f"User {existing_user.username} synchronized (updated)")
         return existing_user
     
-    # Create new user
     db_user = User(
         username=user_data.username,
         email=user_data.email,

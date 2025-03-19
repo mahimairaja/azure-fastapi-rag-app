@@ -8,27 +8,23 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 from app.database import get_db
 
-# Password hashing context
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# JWT Configuration (use environment variables in production)
-SECRET_KEY = "YOUR_SECRET_KEY_HERE"  # Change this!
+
+SECRET_KEY = "MAHIMAIKEY"  
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# OAuth2 scheme for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
 
 def get_password_hash(password: str) -> str:
-    """Hash a password for storing."""
     return pwd_context.hash(password)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a stored password against a provided password."""
     return pwd_context.verify(plain_password, hashed_password)
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    """Create a JWT access token."""
     to_encode = data.copy()
     
     if expires_delta:
@@ -41,7 +37,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return encoded_jwt
 
 def decode_token(token: str):
-    """Decode and validate a JWT token."""
+    """To decode and validate a JWT token."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
@@ -49,7 +45,7 @@ def decode_token(token: str):
         return None
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    """Decode JWT token to get the current user."""
+    """To decode JWT token to get the current user."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Form, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Form
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -7,7 +7,7 @@ from datetime import datetime
 from app.database import get_db
 from app.models.document import Document
 from app.services.authorization import authorization_middleware
-from app.services.rag_service import RAGService
+from app.services.rag_service import process_document, query_documents
 
 # Initialize logger
 logging.basicConfig(level=logging.INFO)
@@ -15,9 +15,6 @@ logger = logging.getLogger(__name__)
 
 # Create router with prefix
 router = APIRouter(prefix="/rag", tags=["RAG"])
-
-# Initialize RAG service
-rag_service = RAGService()
 
 # Define Pydantic models
 class DocumentResponse(BaseModel):
@@ -39,12 +36,8 @@ class QueryRequest(BaseModel):
     top_k: Optional[int] = 5
 
 class SourceResponse(BaseModel):
-    id: str = Field(..., description="Document UUID")
-    title: str
     content: str
-    doc_metadata: Dict[str, Any]
-    created_at: Optional[str] = None
-    answer: Optional[str] = None
+    metadata: Dict[str, Any]
 
 class QueryResponse(BaseModel):
     query: str
@@ -61,22 +54,28 @@ async def upload_document(
     current_user: Dict[str, Any] = Depends(authorization_middleware)
 ):
     """
-    Upload and process a document.
+    Upload and process a document for RAG.
     Only admin and editor roles can upload documents.
     """
     # Check if user is admin or editor
     user_role = current_user.get("role", "")
     if user_role not in ["admin", "editor"]:
+        logger.error(f"User {current_user.get('username')} not authorized to upload documents")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admin and editor roles can upload documents"
         )
     
-    # Read file content
-    content = await file.read()
-    content_str = content.decode("utf-8", errors="replace")
+    file_extension = file.filename.split('.')[-1].lower()
+    if file_extension not in ["pdf", "txt"]:
+        logger.error(f"Unsupported file type: {file_extension}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported file type. Only PDF and TXT files are supported."
+        )
     
-    # Create metadata
+    content = await file.read()
+    
     metadata = {
         "title": title,
         "description": description,
@@ -86,20 +85,34 @@ async def upload_document(
         "uploader_username": current_user.get("username")
     }
     
-    # Process document
     try:
-        doc_id = rag_service.process_document(content_str, metadata, db)
+        doc_metadata = await process_document(
+            content=content,
+            filename=file.filename,
+            title=title,
+            description=description
+        )
         
-        # Get the document from the database
-        document = db.query(Document).filter(Document.doc_id == doc_id).first()
-        if not document:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Document not found after processing"
-            )
+        import uuid
+        doc_id = str(uuid.uuid4())
+        
+        db_document = Document(
+            doc_id=doc_id,
+            title=title,
+            content=content.decode("utf-8", errors="replace"),
+            doc_metadata={
+                **doc_metadata,
+                "uploader_id": current_user.get("user_id"),
+                "uploader_username": current_user.get("username")
+            }
+        )
+        
+        db.add(db_document)
+        db.commit()
+        db.refresh(db_document)
         
         logger.info(f"Document {title} uploaded successfully by user {current_user.get('username')}")
-        return document
+        return db_document
     except Exception as e:
         logger.error(f"Error uploading document: {str(e)}")
         raise HTTPException(
@@ -115,8 +128,7 @@ async def list_documents(
     current_user: Dict[str, Any] = Depends(authorization_middleware)
 ):
     """
-    Get a list of documents.
-    All authenticated users can access this endpoint.
+    List all accessible documents.
     Admin can see all documents, other users see only their own.
     """
     user_role = current_user.get("role", "")
@@ -135,57 +147,54 @@ async def list_documents(
     return documents
 
 @router.post("/query", response_model=QueryResponse)
-async def query_documents(
+async def query_rag(
     query_data: QueryRequest,
     db: Session = Depends(get_db),
     current_user: Dict[str, Any] = Depends(authorization_middleware)
 ):
     """
-    Query documents with RAG.
+    Query documents using RAG.
     All authenticated users can query documents.
     """
     try:
-        results = rag_service.query(query_data.query, query_data.top_k, db)
-        logger.info(f"Query returned {len(results)} results")
+        query_result = await query_documents(
+            query=query_data.query,
+            top_k=query_data.top_k
+        )
         
-        # Special case for Nelson B query
-        if "nelson b" in query_data.query.lower():
-            answer = "Based on the retrieved information, Nelson B. was a former employee who invested in Hooli XYZ, a subsidiary of Hooli. The deal was finalized on November 1, 2022. The investment totaled $50,000 for a 2% equity share. Hooli XYZ is known for using generative AI to create unusual potato cannons."
-            logger.info("Using hardcoded answer for Nelson B query for reliability")
-        else:
-            # Extract answer if available - take the first non-empty answer
-            answer = ""
-            for result in results:
-                if "answer" in result and result["answer"] and result["answer"].strip():
-                    answer = result["answer"].strip()
-                    logger.info(f"Using answer from result: {answer[:50]}...")
-                    break
+        answer = query_result.get("answer", "")
+        
+        if not answer:
+            answer = "No specific answer was found for your query in the available documents."
+        
+        sources = []
+        for source in query_result.get("sources", []):
+            doc_id = None
+            collection_name = source.get("metadata", {}).get("collection_name", "")
             
-            # If no answer was found, use a default message
-            if not answer:
-                logger.warning("No answer found in any of the results")
-                answer = "No specific answer was generated for your query."
-        
-        # Format sources to match the expected schema
-        formatted_sources = []
-        for result in results:
-            # Ensure we have all the necessary fields
-            source = {
-                "id": result.get("id", ""),
-                "title": result.get("title", ""),
-                "content": result.get("content", ""),
-                "doc_metadata": result.get("doc_metadata", {}),
-                "created_at": result.get("created_at"),
-                "answer": answer  # Use the main answer for all sources
+            if collection_name and db:
+                docs = db.query(Document).all()
+                for doc in docs:
+                    if doc.doc_metadata and isinstance(doc.doc_metadata, dict):
+                        if doc.doc_metadata.get("collection_name") == collection_name:
+                            doc_id = doc.doc_id
+                            break
+            
+            source_response = {
+                "content": source.get("content", ""),
+                "metadata": {
+                    "id": doc_id or "unknown",
+                    "title": source.get("metadata", {}).get("source", "Unknown Document"),
+                    "doc_metadata": source.get("metadata", {})
+                }
             }
-            formatted_sources.append(source)
+            sources.append(source_response)
         
-        # Format response
         response = {
             "query": query_data.query,
             "answer": answer,
-            "sources": formatted_sources,
-            "num_results": len(formatted_sources)
+            "sources": sources,
+            "num_results": len(sources)
         }
         
         logger.info(f"Query '{query_data.query}' executed by user {current_user.get('username')}")

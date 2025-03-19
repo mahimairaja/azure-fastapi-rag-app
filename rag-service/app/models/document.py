@@ -7,9 +7,9 @@ class Document(Base):
     __tablename__ = "documents"
     
     id = Column(Integer, primary_key=True, index=True)
-    doc_id = Column(String, unique=True, index=True)  # UUID for document
+    doc_id = Column(String, unique=True, index=True)  
     title = Column(String, index=True)
-    content = Column(Text)  # Raw document content
-    doc_metadata = Column(JSON)  # JSON metadata (uploader, description, etc.)
+    content = Column(Text)  
+    doc_metadata = Column(JSON) 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now()) 

@@ -1,14 +1,12 @@
-from typing import List, Dict, Any, Optional
 import os
-import uuid
-from datetime import datetime
-import json
 import tempfile
+import uuid
+from typing import Dict, Any, Optional, List
+from datetime import datetime
 from sqlalchemy.orm import Session
 from app.models.document import Document
 
-# Add imports for LangChain, Hugging Face, and Groq - updated to use community packages
-from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders import TextLoader, PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -16,64 +14,42 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 from dotenv import load_dotenv
 import logging
+import json
 
-# Load environment variables and setup logging
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize Hugging Face embeddings
-try:
-    EMBEDDINGS = HuggingFaceEmbeddings(
-        model_name="all-MiniLM-L6-v2"
-    )
-    logger.info("HuggingFace Embeddings initialized successfully.")
-except ImportError as e:
-    logger.error(f"Error initializing HuggingFace Embeddings: {e}")
-    logger.warning("Using fallback mode without vector embeddings.")
-    EMBEDDINGS = None
+EMBEDDINGS = HuggingFaceEmbeddings(
+    model_name="all-MiniLM-L6-v2"
+)
+logger.info("HuggingFace Embeddings initialized successfully.")
 
-# Configure document store paths
 DOCUMENT_STORE_PATH = os.environ.get("DOCUMENT_STORE_PATH", "storage/documents")
 CHROMA_PERSIST_DIRECTORY = os.path.join(DOCUMENT_STORE_PATH, "chroma_db")
 
 os.makedirs(DOCUMENT_STORE_PATH, exist_ok=True)
 os.makedirs(CHROMA_PERSIST_DIRECTORY, exist_ok=True)
 
-# Initialize vector store if embeddings are available
-vector_store = None
-if EMBEDDINGS is not None:
-    try:
-        vector_store = Chroma(
-            persist_directory=CHROMA_PERSIST_DIRECTORY,
-            embedding_function=EMBEDDINGS
-        )
-        logger.info("Vector store initialized successfully.")
-    except Exception as e:
-        logger.error(f"Error initializing vector store: {e}")
-        vector_store = None
-
-# Configure text splitter for chunking
+vector_store = Chroma(
+    persist_directory=CHROMA_PERSIST_DIRECTORY,
+    embedding_function=EMBEDDINGS
+)
+logger.info("Vector store initialized successfully.")
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=1000,
     chunk_overlap=200,
     length_function=len,
 )
 
-# Initialize Groq LLM if API key is available
-groq_api_key = os.getenv("GROQ_API_KEY")
-logger.info(f"Environment variables available: {list(os.environ.keys())}")
-logger.info(f"GROQ_API_KEY present in environment: {'GROQ_API_KEY' in os.environ}")
+groq_api_key = os.getenv("GROQ_API_KEY" )
+if groq_api_key:
+    logger.info("GROQ_API_KEY found in environment variables")
+else:
+    logger.warning("GROQ_API_KEY not found in environment variables")
 
-# Initialize llm as None at the module level
-llm = None
 
-# More detailed logging for API key
 try:
-    # Directly set API key on the ChatGroq class
-    os.environ["GROQ_API_KEY"] = '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'
-    
-    # Initialize the LLM
     llm = ChatGroq(
         groq_api_key=groq_api_key,
         model_name="llama3-8b-8192", 
@@ -81,20 +57,11 @@ try:
         max_tokens=1024
     )
     logger.info("Groq API initialized successfully.")
-    
-    # Test that the LLM is working
-    try:
-        test_response = llm.invoke("Say hello!")
-        logger.info(f"Groq API test successful. Response: {test_response.content[:20]}...")
-    except Exception as test_e:
-        logger.error(f"Groq API test failed: {test_e}")
-        
 except Exception as e:
     logger.error(f"Error initializing Groq API: {e}")
-    logger.error(f"Error type: {type(e).__name__}")
     llm = None
 
-# Simple prompt template for the RAG
+
 qa_template = """
 You are a helpful AI assistant that answers questions based on the provided context.
 If you don't know the answer based on the context, just say that you don't know.
@@ -113,271 +80,132 @@ QA_PROMPT = PromptTemplate(
     input_variables=["context", "question"]
 )
 
-class RAGService:
-    """Service for Retrieval-Augmented Generation functionality."""
+def get_document_loader(file_path: str, file_type: str):
+    """
+    This function gets the appropriate document loader based on file type.
+    """
+    if file_type.lower() == 'pdf':
+        return PyPDFLoader(file_path)
+    elif file_type.lower() == 'txt':
+        return TextLoader(file_path)
+    else:
+        raise ValueError(f"Unsupported file type: {file_type}")
+
+async def process_document(
+    content: bytes,
+    filename: str,
+    title: str,
+    description: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Process a document by splitting it into chunks and storing in the vector store.
+    """
+    logger.info(f"Processing document: {filename}")
+    file_extension = filename.split('.')[-1].lower()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
+        temp_file.write(content)
+        temp_file_path = temp_file.name
     
-    def __init__(self):
-        # Storage for documents and embeddings
-        self.storage_dir = DOCUMENT_STORE_PATH
-        self.embeddings_dir = "storage/embeddings"
+    try:
+        # 1. Loading the document
+        loader = get_document_loader(temp_file_path, file_extension)
+        documents = loader.load()
+        logger.info(f"Loaded {len(documents)} documents from {filename}")
+
+        # 2. Splitting the document into chunks
+        splits = text_splitter.split_documents(documents)
+        logger.info(f"Split into {len(splits)} chunks")
+
+        # 3. Adding the document chunks to the vector store
+        collection_name = f"doc_{uuid.uuid4().hex}"
+        document_ids = vector_store.add_documents(
+            splits,
+            collection_name=collection_name
+        )
+        vector_store.persist()
+        logger.info(f"Added {len(document_ids)} document chunks to vector store with collection {collection_name}")
         
-        # Create storage directories if they don't exist
-        os.makedirs(self.storage_dir, exist_ok=True)
-        os.makedirs(self.embeddings_dir, exist_ok=True)
+        document_path = os.path.join(DOCUMENT_STORE_PATH, f"{collection_name}.{file_extension}")
+        with open(document_path, 'wb') as f:
+            f.write(content)
+        logger.info(f"Saved document to {document_path}")
+
+        return {
+            "title": title,
+            "description": description,
+            "file_path": document_path,
+            "file_type": file_extension,
+            "collection_name": collection_name,
+            "num_chunks": len(splits)
+        }
+    except Exception as e:
+        logger.error(f"Error processing document: {e}")
+        raise
+    finally:
+        if os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
+
+async def generate_answer(query: str, retrieved_docs) -> str:
+    """
+    This function generates an answer to the query based on retrieved documents using Groq API.
+    """
+    if not retrieved_docs:
+        logger.warning("No documents retrieved for query")
+        return "No relevant information found to answer your question."
     
-    def process_document(self, content: str, metadata: Dict[str, Any], db: Session) -> str:
-        """
-        Process a document and store its content and metadata.
-        This includes:
-        1. Chunking the document
-        2. Embedding the chunks
-        3. Storing the embeddings in the vector database
-        """
-        # Generate a unique ID for the document
-        doc_id = str(uuid.uuid4())
-        
-        # Store document in the database
-        db_document = Document(
-            doc_id=doc_id,
-            title=metadata.get("title", "Untitled Document"),
-            content=content,
-            doc_metadata=metadata
+    logger.info(f"Generating answer based on {len(retrieved_docs)} retrieved documents")
+    context = "\n\n".join([doc.page_content for doc in retrieved_docs])
+    
+    if llm is not None:
+        try:
+            formatted_prompt = QA_PROMPT.format(context=context, question=query)
+            logger.info(f"Prompt length: {len(formatted_prompt)}")
+            logger.info(f"Sending query to Groq API: {query[:100]}...")
+            
+            response = llm.invoke(formatted_prompt)
+            logger.info("Generated answer with Groq LLM")
+            return response.content
+        except Exception as e:
+            logger.error(f"Error generating answer with Groq: {e}")
+            return f"Based on the retrieved information, here's what I found: {context[:500]}..."
+    else:
+        logger.warning("LLM not available, returning context summary")
+        return f"Based on the retrieved information, here's what I found: {context[:500]}..."
+
+async def query_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
+    """
+    This function queries the document store with a question and generates an answer.
+    """
+    logger.info(f"Querying documents with: {query}, top_k={top_k}")
+    
+    try:
+        retriever = vector_store.as_retriever(
+            search_kwargs={"k": top_k}
         )
         
-        db.add(db_document)
-        db.commit()
-        db.refresh(db_document)
+        docs = retriever.get_relevant_documents(query)
+        logger.info(f"Retrieved {len(docs)} documents for query")
         
-        # Save document to disk as a backup
-        self._save_document(doc_id, content, metadata)
+        answer = await generate_answer(query, docs)
         
-        # Process with LangChain if vector store is available
-        if vector_store is not None:
-            try:
-                # Save content to a temporary file
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as temp_file:
-                    temp_file.write(content.encode('utf-8'))
-                    temp_file_path = temp_file.name
-                
-                # Load and split the document
-                loader = TextLoader(temp_file_path)
-                documents = loader.load()
-                splits = text_splitter.split_documents(documents)
-                
-                # Add document chunks to vector store with the document ID as the collection
-                vector_store.add_documents(
-                    splits,
-                    collection_name=doc_id
-                )
-                vector_store.persist()
-                
-                logger.info(f"Document {doc_id} processed and added to vector store with {len(splits)} chunks.")
-                
-                # Clean up temp file
-                if os.path.exists(temp_file_path):
-                    os.unlink(temp_file_path)
-                    
-            except Exception as e:
-                logger.error(f"Error processing document: {e}")
-        else:
-            logger.warning("Vector store not available. Document will not be processed for semantic search.")
+        results = []
+        for doc in docs:
+            results.append({
+                "content": doc.page_content,
+                "metadata": doc.metadata
+            })
         
-        return doc_id
-    
-    def query(self, query_text: str, top_k: int = 3, db: Session = None) -> List[Dict[str, Any]]:
-        """
-        Query the documents using the provided text.
-        Returns top_k most relevant documents.
-        
-        This function:
-        1. Generates an embedding for the query
-        2. Performs a similarity search in the vector database
-        3. Returns the most relevant chunks
-        """
-        # Try vector-based retrieval if available
-        if vector_store is not None:
-            try:
-                retriever = vector_store.as_retriever(
-                    search_kwargs={"k": top_k}
-                )
-                docs = retriever.get_relevant_documents(query_text)
-                
-                if docs:
-                    # Generate the answer separately
-                    answer = self._generate_answer(query_text, docs)
-                    logger.info(f"Generated answer: {answer[:100]}...")
-                    
-                    results = []
-                    
-                    for doc in docs:
-                        collection_name = doc.metadata.get("collection_name", "")
-                        if db and collection_name:
-                            document = db.query(Document).filter(Document.doc_id == collection_name).first()
-                            if document:
-                                doc_result = {
-                                    "id": document.doc_id,
-                                    "title": document.title,
-                                    "content": doc.page_content,  # Return the chunk content from the vector DB
-                                    "doc_metadata": document.doc_metadata,
-                                    "created_at": document.created_at.isoformat() if document.created_at else None,
-                                    "answer": answer  # Add the answer to each result
-                                }
-                                results.append(doc_result)
-                    
-                    # If we found vector results, return them
-                    if results:
-                        # Make sure all results have the answer
-                        for result in results:
-                            result["answer"] = answer
-                        return results
-            except Exception as e:
-                logger.error(f"Error during vector search: {e}")
-        
-        # Fallback to database retrieval
-        if db:
-            documents = db.query(Document).order_by(Document.created_at.desc()).limit(top_k).all()
-            
-            results = []
-            for doc in documents:
-                results.append({
-                    "id": doc.doc_id,
-                    "title": doc.title,
-                    "content": doc.content,
-                    "doc_metadata": doc.doc_metadata,
-                    "created_at": doc.created_at.isoformat() if doc.created_at else None,
-                    "answer": ""  # Empty answer for fallback results
-                })
-                
-            return results
-        
-        # Final fallback to file-based retrieval
-        return self._get_documents_from_files(top_k)
-    
-    def _generate_answer(self, query: str, retrieved_docs) -> str:
-        """
-        Generate an answer to the query based on retrieved documents using Groq API.
-        """
-        if not retrieved_docs:
-            logger.warning("No documents retrieved for query.")
-            return "No relevant information found to answer your question."
-        
-        context = "\n\n".join([doc.page_content for doc in retrieved_docs])
-        logger.info(f"Context for query (first 100 chars): {context[:100]}...")
-        
-        if llm is not None:
-            try:
-                logger.info("Generating answer with Groq API...")
-                formatted_prompt = QA_PROMPT.format(context=context, question=query)
-                logger.info(f"Prompt length: {len(formatted_prompt)}")
-                
-                response = llm.invoke(formatted_prompt)
-                logger.info("Groq API response received.")
-                
-                if response and hasattr(response, 'content') and response.content:
-                    answer = response.content.strip()
-                    logger.info(f"Generated answer (first 100 chars): {answer[:100]}...")
-                    return answer
-                else:
-                    logger.warning("Received empty response from Groq API.")
-                    return "No specific answer was generated. Please try a different question."
-            except Exception as e:
-                logger.error(f"Error generating answer with Groq: {str(e)}")
-                logger.error(f"Error type: {type(e).__name__}")
-                return f"Unable to generate a specific answer due to an error: {str(e)[:100]}..."
-        else:
-            logger.warning("No LLM available for generating answers.")
-            return "Based on the context, no AI model is available to generate a detailed answer at this time."
-    
-    def get_document(self, doc_id: str, db: Session = None) -> Optional[Dict[str, Any]]:
-        """Get a document by its ID."""
-        if db:
-            doc = db.query(Document).filter(Document.doc_id == doc_id).first()
-            if doc:
-                return {
-                    "id": doc.doc_id,
-                    "title": doc.title,
-                    "content": doc.content,
-                    "doc_metadata": doc.doc_metadata,
-                    "created_at": doc.created_at.isoformat() if doc.created_at else None
-                }
-        
-        # Fallback to file-based retrieval
-        return self._load_document(doc_id)
-    
-    def delete_document(self, doc_id: str, db: Session = None) -> bool:
-        """Delete a document by its ID."""
-        deleted = False
-        
-        if db:
-            doc = db.query(Document).filter(Document.doc_id == doc_id).first()
-            if doc:
-                db.delete(doc)
-                db.commit()
-                deleted = True
-        
-        # Also delete from filesystem if it exists
-        doc_path = os.path.join(self.storage_dir, f"{doc_id}.json")
-        if os.path.exists(doc_path):
-            os.remove(doc_path)
-            deleted = True
-        
-        # Delete from vector store if available
-        if vector_store is not None:
-            try:
-                vector_store.delete_collection(doc_id)
-                vector_store.persist()
-                logger.info(f"Deleted document {doc_id} from vector store")
-            except Exception as e:
-                logger.error(f"Error deleting document from vector store: {e}")
-            
-        return deleted
-    
-    def _save_document(self, doc_id: str, content: str, metadata: Dict[str, Any]):
-        """Save a document to disk."""
-        document = {
-            "id": doc_id,
-            "content": content,
-            "metadata": metadata,  # Keep as metadata in the file for backward compatibility
-            "created_at": datetime.now().isoformat()
+        return {
+            "query": query,
+            "answer": answer,
+            "sources": results,
+            "num_results": len(results)
         }
-        
-        with open(os.path.join(self.storage_dir, f"{doc_id}.json"), "w") as f:
-            json.dump(document, f)
-    
-    def _load_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
-        """Load a document from disk."""
-        doc_path = os.path.join(self.storage_dir, f"{doc_id}.json")
-        if not os.path.exists(doc_path):
-            return None
-            
-        try:
-            with open(doc_path, "r") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Error loading document {doc_id}: {e}")
-            return None
-    
-    def _get_documents_from_files(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get documents from files, sorted by creation time."""
-        if not os.path.exists(self.storage_dir):
-            return []
-            
-        documents = []
-        
-        for filename in os.listdir(self.storage_dir):
-            if filename.endswith(".json"):
-                doc_path = os.path.join(self.storage_dir, filename)
-                try:
-                    with open(doc_path, "r") as f:
-                        document = json.load(f)
-                        documents.append(document)
-                except Exception as e:
-                    print(f"Error loading document {filename}: {e}")
-        
-        # Sort by creation time (newest first)
-        documents.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        
-        return documents[:limit]
-
-# Create a singleton instance
-rag_service = RAGService() 
+    except Exception as e:
+        logger.error(f"Error querying documents: {e}")
+        return {
+            "query": query,
+            "answer": f"An error occurred while processing your query: {str(e)}",
+            "sources": [],
+            "num_results": 0
+        }

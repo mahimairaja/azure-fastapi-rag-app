@@ -5,18 +5,15 @@ from app.services.auth_client import AuthClient
 from typing import Dict, Any
 import logging
 
-# Initialize logger
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize the enforcer
 model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rbac_model.conf")
 policy_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rbac_policy.csv")
 
-# Create the directory for the model and policy if it doesn't exist
 os.makedirs(os.path.dirname(model_path), exist_ok=True)
 
-# Write the model and policy files if they don't exist
 if not os.path.exists(model_path):
     with open(model_path, "w") as f:
         f.write("""[request_definition]

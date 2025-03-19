@@ -3,7 +3,7 @@ import os
 from fastapi import HTTPException, status, Request
 from typing import Dict, Any, Optional
 
-# Auth service URL (environment variable in production)
+
 AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://localhost:8000")
 
 class AuthClient:
@@ -23,7 +23,6 @@ class AuthClient:
             if response.status_code == 200:
                 return response.json()
             else:
-                # Handle different error responses
                 error_detail = "Authentication failed"
                 if response.status_code == 401:
                     error_detail = "Invalid or expired token"
@@ -35,7 +34,6 @@ class AuthClient:
                 )
         
         except requests.RequestException as e:
-            # Handle connection errors to auth service
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Authentication service unavailable: {str(e)}"
@@ -63,6 +61,4 @@ class AuthClient:
                 detail="Not authenticated",
                 headers={"WWW-Authenticate": "Bearer"}
             )
-        
-        # Validate token and get user info
         return AuthClient.validate_token(token) 
