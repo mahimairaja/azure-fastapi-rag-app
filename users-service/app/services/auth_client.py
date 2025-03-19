@@ -16,9 +16,9 @@ class AuthClient:
         Returns user info if valid, raises exception if not.
         """
         try:
+            print(f'The auth service url is {AUTH_SERVICE_URL}')
             response = requests.post(
-                f"{AUTH_SERVICE_URL}/auth/validate-token",
-                json={"token": token}
+                f"{AUTH_SERVICE_URL}/api/auth/auth/validate-token?token={token}"
             )
             
             if response.status_code == 200:

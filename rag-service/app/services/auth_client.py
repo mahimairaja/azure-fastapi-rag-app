@@ -17,8 +17,7 @@ class AuthClient:
         """
         try:
             response = requests.post(
-                f"{AUTH_SERVICE_URL}/auth/validate-token",
-                json={"token": token}
+                f"{AUTH_SERVICE_URL}/api/auth/auth/validate-token?token={token}"
             )
             
             if response.status_code == 200:
