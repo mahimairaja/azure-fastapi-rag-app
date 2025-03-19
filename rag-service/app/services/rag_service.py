@@ -62,20 +62,37 @@ text_splitter = RecursiveCharacterTextSplitter(
 
 # Initialize Groq LLM if API key is available
 groq_api_key = os.getenv("GROQ_API_KEY")
+logger.info(f"Environment variables available: {list(os.environ.keys())}")
+logger.info(f"GROQ_API_KEY present in environment: {'GROQ_API_KEY' in os.environ}")
+
+# Initialize llm as None at the module level
 llm = None
-if groq_api_key:
+
+# More detailed logging for API key
+try:
+    # Directly set API key on the ChatGroq class
+    os.environ["GROQ_API_KEY"] = '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'
+    
+    # Initialize the LLM
+    llm = ChatGroq(
+        groq_api_key=groq_api_key,
+        model_name="llama3-8b-8192", 
+        temperature=0.1,
+        max_tokens=1024
+    )
+    logger.info("Groq API initialized successfully.")
+    
+    # Test that the LLM is working
     try:
-        llm = ChatGroq(
-            groq_api_key=groq_api_key,
-            model_name="llama3-8b-8192",
-            temperature=0.1,
-            max_tokens=1024
-        )
-        logger.info("Groq API initialized successfully.")
-    except Exception as e:
-        logger.error(f"Error initializing Groq API: {e}")
-else:
-    logger.warning("GROQ_API_KEY not found in environment variables. Answer generation will be limited.")
+        test_response = llm.invoke("Say hello!")
+        logger.info(f"Groq API test successful. Response: {test_response.content[:20]}...")
+    except Exception as test_e:
+        logger.error(f"Groq API test failed: {test_e}")
+        
+except Exception as e:
+    logger.error(f"Error initializing Groq API: {e}")
+    logger.error(f"Error type: {type(e).__name__}")
+    llm = None
 
 # Simple prompt template for the RAG
 qa_template = """
@@ -186,7 +203,10 @@ class RAGService:
                 docs = retriever.get_relevant_documents(query_text)
                 
                 if docs:
+                    # Generate the answer separately
                     answer = self._generate_answer(query_text, docs)
+                    logger.info(f"Generated answer: {answer[:100]}...")
+                    
                     results = []
                     
                     for doc in docs:
@@ -194,17 +214,21 @@ class RAGService:
                         if db and collection_name:
                             document = db.query(Document).filter(Document.doc_id == collection_name).first()
                             if document:
-                                results.append({
+                                doc_result = {
                                     "id": document.doc_id,
                                     "title": document.title,
                                     "content": doc.page_content,  # Return the chunk content from the vector DB
                                     "doc_metadata": document.doc_metadata,
                                     "created_at": document.created_at.isoformat() if document.created_at else None,
-                                    "answer": answer
-                                })
+                                    "answer": answer  # Add the answer to each result
+                                }
+                                results.append(doc_result)
                     
                     # If we found vector results, return them
                     if results:
+                        # Make sure all results have the answer
+                        for result in results:
+                            result["answer"] = answer
                         return results
             except Exception as e:
                 logger.error(f"Error during vector search: {e}")
@@ -220,7 +244,8 @@ class RAGService:
                     "title": doc.title,
                     "content": doc.content,
                     "doc_metadata": doc.doc_metadata,
-                    "created_at": doc.created_at.isoformat() if doc.created_at else None
+                    "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                    "answer": ""  # Empty answer for fallback results
                 })
                 
             return results
@@ -233,20 +258,35 @@ class RAGService:
         Generate an answer to the query based on retrieved documents using Groq API.
         """
         if not retrieved_docs:
+            logger.warning("No documents retrieved for query.")
             return "No relevant information found to answer your question."
         
         context = "\n\n".join([doc.page_content for doc in retrieved_docs])
+        logger.info(f"Context for query (first 100 chars): {context[:100]}...")
         
         if llm is not None:
             try:
+                logger.info("Generating answer with Groq API...")
                 formatted_prompt = QA_PROMPT.format(context=context, question=query)
+                logger.info(f"Prompt length: {len(formatted_prompt)}")
+                
                 response = llm.invoke(formatted_prompt)
-                return response.content
+                logger.info("Groq API response received.")
+                
+                if response and hasattr(response, 'content') and response.content:
+                    answer = response.content.strip()
+                    logger.info(f"Generated answer (first 100 chars): {answer[:100]}...")
+                    return answer
+                else:
+                    logger.warning("Received empty response from Groq API.")
+                    return "No specific answer was generated. Please try a different question."
             except Exception as e:
-                logger.error(f"Error generating answer with Groq: {e}")
-                return f"Based on the retrieved information, here's what I found: {context[:500]}..."
+                logger.error(f"Error generating answer with Groq: {str(e)}")
+                logger.error(f"Error type: {type(e).__name__}")
+                return f"Unable to generate a specific answer due to an error: {str(e)[:100]}..."
         else:
-            return f"Based on the retrieved information, here's what I found: {context[:500]}..."
+            logger.warning("No LLM available for generating answers.")
+            return "Based on the context, no AI model is available to generate a detailed answer at this time."
     
     def get_document(self, doc_id: str, db: Session = None) -> Optional[Dict[str, Any]]:
         """Get a document by its ID."""

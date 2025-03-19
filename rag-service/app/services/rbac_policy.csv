@@ -3,5 +3,10 @@ p, admin, /rag, GET
 p, editor, /rag, POST
 p, editor, /rag, GET
 p, user, /rag, GET
+p, user, /rag/query, POST
+p, user, /rag/documents, GET
+p, user, /rag/documents/{id}, GET
+p, editor, /rag/upload, POST
+p, editor, /rag/documents/{id}, DELETE
 g, admin, editor
 g, editor, user
